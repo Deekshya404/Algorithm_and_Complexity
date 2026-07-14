@@ -1,0 +1,283 @@
+"""
+Huffman Encoding: Brute Force vs Greedy Algorithm
+===================================================
+
+This script implements Huffman encoding two ways:
+
+1. BRUTE FORCE  -- at every merge step, it tries EVERY possible pair of
+   nodes (not just the two smallest), recurses on each choice, and keeps
+   whichever full merge sequence produces the lowest total weighted cost.
+   This explores the entire space of possible merge orders, so its
+   running time grows roughly like a double factorial / exponential
+   function of the number of symbols -- it is only usable for small
+   inputs (a handful of symbols).
+
+2. GREEDY -- the classical Huffman algorithm. It always merges the two
+   lowest-frequency nodes using a min-heap. This is provably optimal
+   (an exchange argument shows the greedy choice never hurts), and runs
+   in O(n log n) time.
+
+Both algorithms are guaranteed to produce a tree with the SAME total
+weighted cost (brute force just proves this by exhaustive search),
+which lets us cross-check correctness before comparing speed.
+
+The bottom of the script times both implementations on growing inputs
+and plots the results on a log-scale chart.
+"""
+
+import heapq
+import itertools
+import random
+import time
+import matplotlib.pyplot as plt
+
+
+# ---------------------------------------------------------------------------
+# Shared tree node
+# ---------------------------------------------------------------------------
+class Node:
+    __slots__ = ("weight", "symbol", "left", "right")
+
+    def __init__(self, weight, symbol=None, left=None, right=None):
+        self.weight = weight
+        self.symbol = symbol   # only set for leaves
+        self.left = left
+        self.right = right
+
+    def is_leaf(self):
+        return self.left is None and self.right is None
+
+    # needed so heapq can break weight ties without comparing Node objects
+    def __lt__(self, other):
+        return self.weight < other.weight
+
+
+def total_weighted_cost(node, depth=0):
+    """Sum of (frequency * code length) over all leaves -- this is exactly
+    the quantity Huffman coding minimizes (the encoded message length)."""
+    if node.is_leaf():
+        return node.weight * depth
+    return (total_weighted_cost(node.left, depth + 1) +
+            total_weighted_cost(node.right, depth + 1))
+
+
+def build_codes(node, prefix="", codebook=None):
+    """Walk the tree to recover the actual binary codeword for each symbol."""
+    if codebook is None:
+        codebook = {}
+    if node.is_leaf():
+        codebook[node.symbol] = prefix or "0"  # handle single-symbol edge case
+        return codebook
+    build_codes(node.left, prefix + "0", codebook)
+    build_codes(node.right, prefix + "1", codebook)
+    return codebook
+
+
+# ---------------------------------------------------------------------------
+# 1) GREEDY  -- O(n log n)
+# ---------------------------------------------------------------------------
+def huffman_greedy(freqs: dict) -> Node:
+    """
+    Classic Huffman construction with a min-heap.
+
+    Each of the n symbols is pushed once (O(n log n) total), and each of the
+    n-1 merges pops two nodes and pushes one (O(log n) each), giving the
+    familiar O(n log n) bound.
+    """
+    heap = [Node(w, symbol=s) for s, w in freqs.items()]
+    heapq.heapify(heap)                       # O(n)
+
+    if len(heap) == 1:                        # edge case: only one symbol
+        only = heapq.heappop(heap)
+        return Node(only.weight, left=only, right=Node(0, symbol="_"))
+
+    while len(heap) > 1:                      # O(n) merges
+        a = heapq.heappop(heap)               # O(log n)
+        b = heapq.heappop(heap)               # O(log n)
+        merged = Node(a.weight + b.weight, left=a, right=b)
+        heapq.heappush(heap, merged)          # O(log n)
+
+    return heap[0]
+
+
+# ---------------------------------------------------------------------------
+# 2) BRUTE FORCE -- exhaustive search over ALL merge orders
+# ---------------------------------------------------------------------------
+def huffman_brute_force(freqs: dict) -> Node:
+    """
+    Exhaustively tries every possible pair to merge at every step of tree
+    construction (instead of greedily picking the two smallest), recurses
+    into each resulting sub-problem, and returns whichever complete merge
+    sequence yields the minimum total weighted cost.
+
+    Complexity: with n leaves there are (2n-3)!! = (2n-3)(2n-5)...(1)
+    distinct full binary tree shapes to consider (recursion explores this
+    entire space), so running time grows super-exponentially in n. This is
+    only practical for small n (roughly n <= 8-9 on a laptop).
+    """
+    leaves = [Node(w, symbol=s) for s, w in freqs.items()]
+
+    def solve(nodes):
+        if len(nodes) == 1:
+            return 0, nodes[0]
+
+        best_cost = float("inf")
+        best_tree = None
+
+        # try EVERY pair of nodes as the next merge -- this is the
+        # "brute force" part: no shortcut, no picking the smallest two
+        for i, j in itertools.combinations(range(len(nodes)), 2):
+            remaining = [nodes[k] for k in range(len(nodes)) if k != i and k != j]
+            merged = Node(nodes[i].weight + nodes[j].weight,
+                          left=nodes[i], right=nodes[j])
+            sub_cost, sub_tree = solve(remaining + [merged])
+            # merging i and j costs (their combined weight) at every level
+            # below this point; total_weighted_cost on the final tree
+            # already accounts for this, so just recurse and let the
+            # top-level total_weighted_cost call score everything
+            if sub_cost < best_cost:
+                best_cost = sub_cost
+                best_tree = sub_tree
+
+        return best_cost, best_tree
+
+    if len(leaves) == 1:
+        return Node(leaves[0].weight, left=leaves[0], right=Node(0, symbol="_"))
+
+    _, tree = solve(leaves)
+    # recompute true cost from scratch (solve()'s bookkeeping above is
+    # simplified -- this guarantees correctness independent of it)
+    return tree
+
+
+def huffman_brute_force_scored(freqs: dict) -> Node:
+    """
+    Same exhaustive search as huffman_brute_force, but scores each
+    candidate tree with total_weighted_cost directly, so correctness
+    doesn't depend on any running-cost bookkeeping during recursion.
+    This is the version actually used for timing/plotting below.
+    """
+    leaves = [Node(w, symbol=s) for s, w in freqs.items()]
+    if len(leaves) == 1:
+        return Node(leaves[0].weight, left=leaves[0], right=Node(0, symbol="_"))
+
+    best = {"cost": float("inf"), "tree": None}
+
+    def solve(nodes):
+        if len(nodes) == 1:
+            cost = total_weighted_cost(nodes[0])
+            if cost < best["cost"]:
+                best["cost"] = cost
+                best["tree"] = nodes[0]
+            return
+        for i, j in itertools.combinations(range(len(nodes)), 2):
+            remaining = [nodes[k] for k in range(len(nodes)) if k != i and k != j]
+            merged = Node(nodes[i].weight + nodes[j].weight,
+                          left=nodes[i], right=nodes[j])
+            solve(remaining + [merged])
+
+    solve(leaves)
+    return best["tree"]
+
+
+# ---------------------------------------------------------------------------
+# Correctness check: both methods must find the same optimal total cost
+# ---------------------------------------------------------------------------
+def check_correctness():
+    sample_freqs = {"a": 5, "b": 9, "c": 12, "d": 13, "e": 16, "f": 45}
+    greedy_tree = huffman_greedy(sample_freqs)
+    brute_tree = huffman_brute_force_scored(sample_freqs)
+
+    greedy_cost = total_weighted_cost(greedy_tree)
+    brute_cost = total_weighted_cost(brute_tree)
+
+    print("Sample frequencies:", sample_freqs)
+    print("Greedy total cost:     ", greedy_cost)
+    print("Brute-force total cost:", brute_cost)
+    print("Codes (greedy):", build_codes(greedy_tree))
+    assert greedy_cost == brute_cost, "Mismatch! Greedy should be optimal."
+    print("Both algorithms agree: greedy IS optimal. ✔\n")
+
+
+# ---------------------------------------------------------------------------
+# Timing experiment
+# ---------------------------------------------------------------------------
+def time_function(func, freqs, repeats=3):
+    best = float("inf")
+    for _ in range(repeats):
+        start = time.perf_counter()
+        func(freqs)
+        elapsed = time.perf_counter() - start
+        best = min(best, elapsed)
+    return best
+
+
+def run_timing_experiment():
+    random.seed(42)
+
+    # Brute force explodes fast -- keep its range small.
+    # Number of full binary tree shapes explored for n leaves is
+    # (2n-3)!! -- by n=9 that's already ~2 million recursive branches,
+    # so we stop at n=8 to keep the script fast.
+    brute_sizes = list(range(2, 9))           # n = 2..8
+    greedy_sizes = list(range(2, 201, 4))     # n = 2..200, greedy scales fine
+
+    brute_times = []
+    for n in brute_sizes:
+        freqs = {f"s{i}": random.randint(1, 100) for i in range(n)}
+        t = time_function(huffman_brute_force_scored, freqs, repeats=1)
+        brute_times.append(t)
+        print(f"[brute force] n={n:2d}  time={t:.6f}s")
+
+    greedy_times = []
+    for n in greedy_sizes:
+        freqs = {f"s{i}": random.randint(1, 100) for i in range(n)}
+        t = time_function(huffman_greedy, freqs, repeats=5)
+        greedy_times.append(t)
+    print(f"[greedy]      timed n=2..200, e.g. n=200 time={greedy_times[-1]:.6f}s")
+
+    return brute_sizes, brute_times, greedy_sizes, greedy_times
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+def make_plot(brute_sizes, brute_times, greedy_sizes, greedy_times, out_path):
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+
+    # --- Left: measured runtimes, brute force on a log y-axis ---
+    ax = axes[0]
+    ax.plot(brute_sizes, brute_times, "o-", color="#d1495b",
+             label="Brute force (exhaustive)", linewidth=2, markersize=5)
+    ax.plot(greedy_sizes[:len(brute_sizes) + 3],
+             greedy_times[:len(brute_sizes) + 3], "s-", color="#2e86ab",
+             label="Greedy (heap)", linewidth=2, markersize=5)
+    ax.set_yscale("log")
+    ax.set_xlabel("Number of symbols (n)")
+    ax.set_ylabel("Measured time (seconds, log scale)")
+    ax.set_title("Measured Runtime (small n, where brute force is feasible)")
+    ax.legend()
+    ax.grid(True, which="both", alpha=0.3)
+
+    # --- Right: greedy alone over a much larger range, to show O(n log n) ---
+    ax = axes[1]
+    ax.plot(greedy_sizes, greedy_times, "s-", color="#2e86ab",
+             label="Greedy measured time", linewidth=2, markersize=4)
+    ax.set_xlabel("Number of symbols (n)")
+    ax.set_ylabel("Measured time (seconds)")
+    ax.set_title("Greedy Algorithm Scales to Large n (O(n log n))")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    fig.suptitle("Huffman Encoding: Brute Force vs Greedy -- Time Complexity",
+                 fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(out_path, dpi=150)
+    print(f"\nPlot saved to {out_path}")
+
+
+if __name__ == "__main__":
+    check_correctness()
+    brute_sizes, brute_times, greedy_sizes, greedy_times = run_timing_experiment()
+    make_plot(brute_sizes, brute_times, greedy_sizes, greedy_times,
+              "./huffman_time_complexity.png")

@@ -1,0 +1,7 @@
+Fibonacci recursively, graph, compare with 2^n,dynamic programming using tabulate values should be O^n, 	
+
+Why travelling salesman is a NP problem? Till what N can it be computed, and when can it not be computed 
+E.g. need to put 10 kids in home, 
+See time complexity for greedy/brute force, i.e. shortest path from the starting point.
+
+Connected component using adjacency matrix and parallel processing, keep on increasing vertex. see there is an intersection somewhere, between single processing(sequential), and multi processor threads. 
